@@ -239,7 +239,8 @@ public class NetworkingBluetooth extends CordovaPlugin {
 
 					try {
 						BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
-						socket = device.createRfcommSocketToServiceRecord(UUID.fromString(uuid));
+						// socket = device.createRfcommSocketToServiceRecord(UUID.fromString(uuid));
+						socket = device.createInsecureRfcommSocketToServiceRecord(UUID.fromString(uuid));
 
 						// Note: You should always ensure that the device is not performing
 						// device discovery when you call connect().
