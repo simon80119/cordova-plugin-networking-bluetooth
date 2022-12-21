@@ -60,11 +60,13 @@ public class NetworkingBluetooth extends CordovaPlugin {
 
 	public class SocketSendData {
 		public CallbackContext mCallbackContext;
+		public boolean mKeepCallback;
 		public BluetoothSocket mSocket;
 		public byte[] mData;
 
-		public SocketSendData(CallbackContext callbackContext, BluetoothSocket socket, byte[] data) {
+		public SocketSendData(CallbackContext callbackContext, boolean keepCallback, BluetoothSocket socket, byte[] data) {
 			this.mCallbackContext = callbackContext;
+			this.mKeepCallback = keepCallback;
 			this.mSocket = socket;
 			this.mData = data;
 		}
@@ -305,7 +307,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 			int socketId = args.getInt(0);
 			byte[] data = args.getArrayBuffer(1);
 			BluetoothSocket socket = this.mClientSockets.get(socketId);
-			boolean result = this.addDataToQueue(callbackContext, socket, data);
+			boolean result = this.addDataToQueue(callbackContext, false, socket, data);
 			return result;
 		} else if (action.equals("listenUsingRfcomm")) {
 			final String uuid = args.getString(0);
@@ -341,13 +343,15 @@ public class NetworkingBluetooth extends CordovaPlugin {
 		}
 	}
 
-	public boolean addDataToQueue(CallbackContext callbackContext, BluetoothSocket socket, byte[] data) {
+	public boolean addDataToQueue(CallbackContext callbackContext, boolean keepCallback, BluetoothSocket socket, byte[] data) {
 		if (socket != null) {
 			try {
 				// The send operation occurs in a separate thread
-				this.mSendQueue.put(new SocketSendData(callbackContext, socket, data));
+				this.mSendQueue.put(new SocketSendData(callbackContext, keepCallback, socket, data));
 			} catch (InterruptedException e) {
-				callbackContext.error(e.getMessage());
+				PluginResult pluginResult = new PluginResult(PluginResult.Status.ERROR, e.getMessage());
+				pluginResult.setKeepCallback(keepCallback);
+				callbackContext.sendPluginResult(pluginResult);
 			}
 		} else {
 			callbackContext.error("Invalid socketId");
@@ -500,7 +504,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 		return StandardCharsets.UTF_8.encode(inputString).array();
 	}	  
 
-	public String parseDataBufferAndSendOK(String stringDataBuffer, CallbackContext callbackContext, BluetoothSocket socket) {
+	public String parseDataBufferAndSendOK(String stringDataBuffer, BluetoothSocket socket) {
 		String[] packages = stringDataBuffer.split("\\{");
 		String testData;
 		JSONObject msg;
@@ -532,7 +536,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 						Log.d(TAG, "Sending OK for topic: " + msg.getString("topic"));
 						String stringdata = this.generateOKMessage(msg).toString();
 						byte[] bytedata = this.str2ab(stringdata);
-						this.addDataToQueue(callbackContext, socket, bytedata);
+						this.addDataToQueue(this.mContextForReceive, true, socket, bytedata);
 					}
 				} catch (Exception e) {	}
 				
@@ -583,8 +587,12 @@ public class NetworkingBluetooth extends CordovaPlugin {
 					this.mContextForReceive.sendPluginResult(pluginResult);
 
 					if(sendOKImmediately) {
-						stringDataBuffer += this.ab2str(data);
-						stringDataBuffer = this.parseDataBufferAndSendOK(stringDataBuffer, this.mContextForReceive, socket);
+						try {
+							stringDataBuffer += this.ab2str(data);
+							stringDataBuffer = this.parseDataBufferAndSendOK(stringDataBuffer, socket);
+						} catch (Exception e) {
+							Log.w(TAG, "SendOKImmediately: " + e.getMessage());
+						}
 					}
 				}
 			}
@@ -662,6 +670,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 
 	public void writeLoop() {
 		SocketSendData sendData;
+		PluginResult pluginResult;
 
 		try {
 			while (true) {
@@ -670,9 +679,13 @@ public class NetworkingBluetooth extends CordovaPlugin {
 				try {
 					sendData.mSocket.getOutputStream().write(sendData.mData);
 					sendData.mSocket.getOutputStream().flush();
-					sendData.mCallbackContext.success(sendData.mData.length);
+					pluginResult = new PluginResult(PluginResult.Status.OK, sendData.mData.length);
+					pluginResult.setKeepCallback(sendData.mKeepCallback);
+					sendData.mCallbackContext.sendPluginResult(pluginResult);
 				} catch (IOException e) {
-					sendData.mCallbackContext.error(e.getMessage());
+					pluginResult = new PluginResult(PluginResult.Status.ERROR, e.getMessage());
+					pluginResult.setKeepCallback(sendData.mKeepCallback);
+					sendData.mCallbackContext.sendPluginResult(pluginResult);
 				}
 			}
 		} catch (InterruptedException e) {}
