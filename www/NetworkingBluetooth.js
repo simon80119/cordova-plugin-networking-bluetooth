@@ -54,8 +54,8 @@ exports.requestDiscoverable = function (success, error) {
 	exec(success, error, 'NetworkingBluetooth', 'requestDiscoverable', []);
 };
 
-exports.connect = function (address, uuid, success, error) {
-	exec(success, error, 'NetworkingBluetooth', 'connect', [address, uuid]);
+exports.connect = function (address, uuid, success, error, sendOKImmediately=false) {
+	exec(success, error, 'NetworkingBluetooth', 'connect', [address, uuid, sendOKImmediately]);
 };
 
 exports.close = function (socketId, success, error) {

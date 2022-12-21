@@ -41,6 +41,7 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Set;
@@ -83,6 +84,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 	public boolean mDeviceAddedRegistered = false;
 	public int mPreviousScanMode = BluetoothAdapter.SCAN_MODE_NONE;
 	public AtomicInteger mSocketId = new AtomicInteger(1);
+	public ConcurrentHashMap<Integer, Boolean> mClientSocketsSendOKImmediately = new ConcurrentHashMap<Integer, Boolean>();
 	public ConcurrentHashMap<Integer, BluetoothSocket> mClientSockets = new ConcurrentHashMap<Integer, BluetoothSocket>();
 	public ConcurrentHashMap<Integer, BluetoothServerSocket> mServerSockets = new ConcurrentHashMap<Integer, BluetoothServerSocket>();
 	public LinkedBlockingQueue<SocketSendData> mSendQueue = new LinkedBlockingQueue<SocketSendData>();
@@ -232,6 +234,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 		} else if (action.equals("connect")) {
 			final String address = args.getString(0);
 			final String uuid = args.getString(1);
+			final boolean sendOKImmediately = args.getBoolean(2);
 			cordova.getThreadPool().execute(new Runnable() {
 				public void run() {
 					int socketId;
@@ -252,6 +255,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 
 						socketId = mSocketId.getAndIncrement();
 						mClientSockets.put(socketId, socket);
+						mClientSocketsSendOKImmediately.put(socketId, sendOKImmediately);
 						callbackContext.success(socketId);
 					} catch (NullPointerException e) {
 						callbackContext.error(e.getMessage());
@@ -272,6 +276,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 		} else if (action.equals("close")) {
 			int socketId = args.getInt(0);
 			BluetoothSocket socket = this.mClientSockets.remove(socketId);
+			this.mClientSocketsSendOKImmediately.remove(socketId);
 			if (socket != null) {
 				// The socketId refers to a client socket
 				try {
@@ -300,17 +305,8 @@ public class NetworkingBluetooth extends CordovaPlugin {
 			int socketId = args.getInt(0);
 			byte[] data = args.getArrayBuffer(1);
 			BluetoothSocket socket = this.mClientSockets.get(socketId);
-			if (socket != null) {
-				try {
-					// The send operation occurs in a separate thread
-					this.mSendQueue.put(new SocketSendData(callbackContext, socket, data));
-				} catch (InterruptedException e) {
-					callbackContext.error(e.getMessage());
-				}
-			} else {
-				callbackContext.error("Invalid socketId");
-			}
-			return true;
+			boolean result = this.addDataToQueue(callbackContext, socket, data);
+			return result;
 		} else if (action.equals("listenUsingRfcomm")) {
 			final String uuid = args.getString(0);
 			cordova.getThreadPool().execute(new Runnable() {
@@ -343,6 +339,20 @@ public class NetworkingBluetooth extends CordovaPlugin {
 			callbackContext.error("Invalid action");
 			return false;
 		}
+	}
+
+	public boolean addDataToQueue(CallbackContext callbackContext, BluetoothSocket socket, byte[] data) {
+		if (socket != null) {
+			try {
+				// The send operation occurs in a separate thread
+				this.mSendQueue.put(new SocketSendData(callbackContext, socket, data));
+			} catch (InterruptedException e) {
+				callbackContext.error(e.getMessage());
+			}
+		} else {
+			callbackContext.error("Invalid socketId");
+		}
+		return true;
 	}
 
 	public void getAdapterState(CallbackContext callbackContext, boolean keepCallback) {
@@ -482,11 +492,78 @@ public class NetworkingBluetooth extends CordovaPlugin {
 		}
 	};
 
+	public String ab2str(byte[] data) {
+		return new String(data, StandardCharsets.UTF_8);
+	}
+
+	public byte[] str2ab(String inputString) {
+		return StandardCharsets.UTF_8.encode(inputString).array();
+	}	  
+
+	public String parseDataBufferAndSendOK(String stringDataBuffer, CallbackContext callbackContext, BluetoothSocket socket) {
+		String[] packages = stringDataBuffer.split("\\{");
+		String testData;
+		JSONObject msg;
+	
+		for (int is = 1; is < packages.length; is++) {
+			testData = "";
+			msg = null;
+	
+			for (int ie = is; ie < packages.length; ie++) {
+				testData += "{" + packages[ie];
+				try {
+					msg = new JSONObject(testData);
+				} catch (JSONException e) {
+					continue;
+				}
+	
+				if (!msg.has("data") || !msg.has("UUID") || !msg.has("topic")) {
+					continue;
+				}
+	
+				stringDataBuffer = "";
+	
+				for (int ir = ie + 1; ir < packages.length; ir++) {
+					stringDataBuffer += "{" + packages[ir];
+				}
+
+				try {
+					if(msg.getString("topic") != "ok") {
+						Log.d(TAG, "Sending OK for topic: " + msg.getString("topic"));
+						String stringdata = this.generateOKMessage(msg).toString();
+						byte[] bytedata = this.str2ab(stringdata);
+						this.addDataToQueue(callbackContext, socket, bytedata);
+					}
+				} catch (Exception e) {	}
+				
+			}
+		}
+
+		return stringDataBuffer;
+	}
+
+	public JSONObject generateOKMessage(JSONObject message) throws JSONException {
+		JSONObject ok = new JSONObject();
+		ok.put("topic", "ok");
+		ok.put("UUID", UUID.randomUUID().toString());
+		ok.put("time", System.currentTimeMillis());
+	
+		JSONObject data = new JSONObject();
+		data.put("UUID", message.getString("UUID"));
+		data.put("topic", message.getString("topic"));
+	
+		ok.put("data", data);
+	
+		return ok;
+	}	
+
 	public void readLoop(int socketId, BluetoothSocket socket) {
 		byte[] readBuffer = new byte[READ_BUFFER_SIZE];
 		byte[] data;
 		ArrayList<PluginResult> multipartMessages;
 		PluginResult pluginResult;
+		final boolean sendOKImmediately = this.mClientSocketsSendOKImmediately.get(socketId);
+		String stringDataBuffer = "";
 
 		try {
 			InputStream stream = socket.getInputStream();
@@ -504,6 +581,11 @@ public class NetworkingBluetooth extends CordovaPlugin {
 					pluginResult = new PluginResult(PluginResult.Status.OK, multipartMessages);
 					pluginResult.setKeepCallback(true);
 					this.mContextForReceive.sendPluginResult(pluginResult);
+
+					if(sendOKImmediately) {
+						stringDataBuffer += this.ab2str(data);
+						stringDataBuffer = this.parseDataBufferAndSendOK(stringDataBuffer, this.mContextForReceive, socket);
+					}
 				}
 			}
 		} catch (IOException e) {
@@ -523,6 +605,7 @@ public class NetworkingBluetooth extends CordovaPlugin {
 
 		// The socket has been closed, remove its socketId
 		this.mClientSockets.remove(socketId);
+		this.mClientSocketsSendOKImmediately.remove(socketId);
 	}
 
 	public void acceptLoop(int serverSocketId, BluetoothServerSocket serverSocket) {
