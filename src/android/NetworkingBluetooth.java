@@ -531,19 +531,22 @@ public class NetworkingBluetooth extends CordovaPlugin {
 					stringDataBuffer += "{" + packages[ir];
 				}
 
-				try {
-					if(msg.getString("topic") != "ok") {
-						Log.d(TAG, "Sending OK for topic: " + msg.getString("topic"));
-						String stringdata = this.generateOKMessage(msg).toString();
-						byte[] bytedata = this.str2ab(stringdata);
-						this.addDataToQueue(this.mContextForReceive, true, socket, bytedata);
-					}
-				} catch (Exception e) {	}
-				
+				this.sendOKMessage(socket, msg);
 			}
 		}
 
 		return stringDataBuffer;
+	}
+
+	public void sendOKMessage(BluetoothSocket socket, JSONObject message) {
+		try {
+			if(message.getString("topic") != "ok") {
+				Log.d(TAG, "Sending OK for topic: " + message.getString("topic"));
+				String stringdata = this.generateOKMessage(message).toString();
+				byte[] bytedata = this.str2ab(stringdata);
+				this.addDataToQueue(this.mContextForReceive, true, socket, bytedata);
+			}
+		} catch (Exception e) {	}
 	}
 
 	public JSONObject generateOKMessage(JSONObject message) throws JSONException {
